@@ -199,6 +199,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 const difficulty = document.querySelector('input[name="difficulty"]:checked').value;
                 this.initializeGame(parseInt(difficulty, 10));
             });
+
+            document.addEventListener('keydown', this.handleKeyDown.bind(this));
         }
 
         // --- アセット読み込み ---
@@ -295,11 +297,6 @@ document.addEventListener('DOMContentLoaded', () => {
             this.tickCounter = 0;
             this.gameLoop = this.run.bind(this);
             this.gameLoopId = requestAnimationFrame(this.gameLoop);
-        }
-
-        // --- イベントリスナー ---
-        addEventListeners() {
-            document.addEventListener('keydown', this.handleKeyDown.bind(this));
         }
 
         // --- キー入力処理 ---
