@@ -1,0 +1,752 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>Mahjong Drop</title>
+    <style>
+        body {
+            background-color: #f0f0f0;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            margin: 0;
+            font-family: "Noto Sans JP", sans-serif;
+        }
+        #game-container {
+            display: flex;
+            margin-top: 20px;
+            border: 2px solid #333;
+            box-shadow: 5px 5px 15px rgba(0,0,0,0.3);
+            /* ウィンドウ幅を固定 */
+            width: 504px; /* 300 (canvas) + 200 (panel) + 4 (borders) */
+        }
+        canvas {
+            background-color: #fff;
+            display: block;
+        }
+        #side-panel {
+            width: 200px;
+            padding: 10px 20px;
+            background-color: #e0e0e0;
+            border-left: 2px solid #333;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        #side-panel h2, #side-panel h3 {
+            margin: 0 0 10px 0;
+            text-align: center;
+        }
+        #side-panel p {
+            margin: 5px 0;
+        }
+        #score-display, #next-pair-preview {
+            width: 100%;
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        #next-pair-canvas {
+            background-color: #f8f8f8;
+            border: 1px solid #ccc;
+        }
+        #controls {
+            font-size: 0.9em;
+        }
+        #game-over-screen {
+            position: absolute;
+            background-color: rgba(0, 0, 0, 0.75);
+            color: white;
+            display: none; /* 初期状態は非表示 */
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+        }
+        #start-screen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.8);
+            color: white;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            z-index: 100;
+        }
+        .start-screen-content {
+            background: #2c2c2c;
+            padding: 2em;
+            border-radius: 15px;
+            border: 2px solid #fff;
+        }
+        .difficulty-options {
+            margin: 20px 0;
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 10px;
+        }
+        #start-button {
+            padding: 10px 25px;
+            font-size: 1.2em;
+            cursor: pointer;
+            border: none;
+            border-radius: 5px;
+            background-color: #4CAF50;
+            color: white;
+            transition: background-color 0.3s;
+        }
+        #start-button:hover { background-color: #45a049; }
+    </style>
+</head>
+<body>
+
+<div id="start-screen">
+    <div class="start-screen-content">
+        <h2>Mahjong Drop</h2>
+        <p>難易度を選択してください</p>
+        <div class="difficulty-options">
+            <label><input type="radio" name="difficulty" value="1" checked> レベル1 (かんたん)</label>
+            <label><input type="radio" name="difficulty" value="2"> レベル2 (ふつう)</label>
+            <label><input type="radio" name="difficulty" value="3"> レベル3 (すべて)</label>
+        </div>
+        <button id="start-button">ゲーム開始</button>
+    </div>
+</div>
+
+<div id="game-container">
+    <canvas id="game-canvas"></canvas>
+    <div id="side-panel">
+        <h2>Mahjong Drop</h2>
+        <div id="score-display">
+            <h3>SCORE</h3>
+            <p id="score-value">0</p>
+        </div>
+        <div id="next-pair-preview">
+            <h3>NEXT</h3>
+                        <canvas id="next-pair-canvas" width="60" height="100"></canvas>
+        </div>
+        <div id="controls">
+            <h3>操作方法</h3>
+            <p>← / → : 移動</p>
+            <p>↑ : 回転</p>
+            <p>↓ : 加速</p>
+            <p>Space : ハードドロップ</p>
+            <p>[R] : リスタート</p>
+        </div>
+    </div>
+    <div id="game-over-screen"></div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    // --- 定数定義 ---
+    const COLS = 10;
+    const ROWS = 16;
+    const CELL_WIDTH = 30;
+    const CELL_HEIGHT = 38;
+    const GAME_WIDTH = COLS * CELL_WIDTH;
+    const GAME_HEIGHT = ROWS * CELL_HEIGHT;
+
+    const JIHAIS = ['east', 'south', 'west', 'north', 'white', 'green', 'red'];
+    const MANZUS = Array.from({length: 9}, (_, i) => `man${i + 1}`);
+    const PINZUS = Array.from({length: 9}, (_, i) => `pin${i + 1}`);
+    const SOUZUS = Array.from({length: 9}, (_, i) => `sou${i + 1}`);
+    const ALL_TILE_TYPES = [...JIHAIS, ...MANZUS, ...PINZUS, ...SOUZUS];
+
+    const TILE_TYPES = ALL_TILE_TYPES;
+
+    const TILE_IMAGE_BASE_URL = 'hai/';
+
+    // フォールバック用描画設定
+    const FALLBACK_COLORS = {
+        'man': '#E6E6E6', 'pin': '#B0E0E6', 'sou': '#98FB98', 'char': '#FFDAB9'
+    };
+    const FALLBACK_TEXT = {
+        'east': '東', 'south': '南', 'west': '西', 'north': '北',
+        'white': '白', 'green': '發', 'red': '中'
+    };
+
+    const INITIAL_FALL_INTERVAL = 30; // ticks (約0.5秒)
+
+    // --- ゲームクラス ---
+    class MahjongDropGame {
+        constructor() {
+            // Canvasのセットアップ
+            this.canvas = document.getElementById('game-canvas');
+            this.ctx = this.canvas.getContext('2d');
+            this.canvas.width = GAME_WIDTH;
+            this.canvas.height = GAME_HEIGHT;
+
+            this.nextCanvas = document.getElementById('next-pair-canvas');
+            this.nextCtx = this.nextCanvas.getContext('2d');
+
+            this.scoreValueEl = document.getElementById('score-value');
+            this.gameOverScreen = document.getElementById('game-over-screen');
+            this.startScreen = document.getElementById('start-screen');
+            this.startButton = document.getElementById('start-button');
+
+            this.tileImages = {};
+            this.isReady = false;
+            this.currentDifficulty = 1; // ゲームの難易度を保持
+            this.loadAssets();
+
+            this.startButton.addEventListener('click', () => {
+                const difficulty = document.querySelector('input[name="difficulty"]:checked').value;
+                this.initializeGame(parseInt(difficulty, 10));
+            });
+        }
+
+        // --- アセット読み込み ---
+        getTileImageFilename(type) {
+            const honorMap = {
+                'east': 'ji1-ton', 'south': 'ji2-nan', 'west': 'ji3-sha', 'north': 'ji4-pei',
+                'white': 'ji5-haku', 'green': 'ji6-hatsu', 'red': 'ji7-chun'
+            };
+
+            if (honorMap[type]) {
+                return `${honorMap[type]}.gif`;
+            }
+
+            return `${type}.gif`;
+        }
+
+        async loadAssets() {
+            const promises = ALL_TILE_TYPES.map(type => {
+                return new Promise((resolve) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        this.tileImages[type] = { image: img, loaded: true };
+                        resolve();
+                    };
+                    img.onerror = () => {
+                        console.warn(`Failed to load image: ${type}.png. Using fallback.`);
+                        let key, text;
+                        // 字牌を先にチェックする
+                        if (FALLBACK_TEXT[type]) {
+                            key = 'char';
+                            text = FALLBACK_TEXT[type];
+                        } else if (type.startsWith('man')) {
+                            key = 'man';
+                            text = type.slice(-1);
+                        } else if (type.startsWith('pin')) {
+                            key = 'pin';
+                            text = type.slice(-1);
+                        } else if (type.startsWith('sou')) {
+                            key = 'sou';
+                            text = type.slice(-1);
+                        } else {
+                            key = 'char'; // 不明な牌
+                            text = '?';
+                        }
+
+                        this.tileImages[type] = {
+                            loaded: false,
+                            color: FALLBACK_COLORS[key],
+                            text: text
+                        };
+                        resolve(); // エラーでも解決してゲームを続行
+                    };
+                    img.src = `${TILE_IMAGE_BASE_URL}${this.getTileImageFilename(type)}`;
+                });
+            });
+            await Promise.all(promises);
+            console.log('All assets loading process finished.');
+            this.isReady = true;
+        }
+
+        initializeGame(difficulty) {
+            this.startScreen.style.display = 'none';
+            this.currentDifficulty = difficulty; // 難易度を保存
+            let tiles = [...JIHAIS, ...MANZUS];
+            if (difficulty >= 2) tiles.push(...PINZUS);
+            if (difficulty >= 3) tiles.push(...SOUZUS);
+            this.activeTileTypes = tiles;
+
+            this.start();
+        }
+
+        // --- ゲーム開始/リセット ---
+        start() {
+            // 既存のゲームループを停止
+            if (this.gameLoopId) {
+                cancelAnimationFrame(this.gameLoopId);
+            }
+
+            // 盤面を初期化
+            this.grid = Array.from({ length: ROWS }, () => Array(COLS).fill(null));
+            this.score = 0;
+            this.fallInterval = INITIAL_FALL_INTERVAL;
+            this.gameOver = false;
+            this.isCheckingMatches = false;
+
+            this.updateScoreDisplay();
+            this.spawnPair(); // 最初のペアを生成
+            this.spawnPair(); // 次のペアを準備
+
+            this.gameOverScreen.style.display = 'none';
+
+            this.addEventListeners();
+            this.lastTime = 0;
+            this.tickCounter = 0;
+            this.gameLoop = this.run.bind(this);
+            this.gameLoopId = requestAnimationFrame(this.gameLoop);
+        }
+
+        // --- イベントリスナー ---
+        addEventListeners() {
+            document.addEventListener('keydown', this.handleKeyDown.bind(this));
+        }
+
+        // --- キー入力処理 ---
+        handleKeyDown(e) {
+            if (!this.isReady) return;
+
+            // 'R' キーでいつでもリスタート
+            if (e.key.toLowerCase() === 'r') {
+                this.initializeGame(this.currentDifficulty);
+                return;
+            }
+
+            if (this.gameOver) return; // ゲームオーバー時はリスタート以外受け付けない
+
+            if (this.isCheckingMatches || !this.currentPair) return;
+
+            switch (e.key) {
+                case 'ArrowLeft':
+                    this.movePair(-1, 0);
+                    break;
+                case 'ArrowRight':
+                    this.movePair(1, 0);
+                    break;
+                case 'ArrowUp':
+                    this.rotatePair();
+                    break;
+                case 'ArrowDown': // ソフトドロップ
+                    this.tickCounter = this.fallInterval; // 即座に1マス落下
+                    break;
+                case ' ':
+                case 'Enter':
+                    e.preventDefault();
+                    this.hardDrop();
+                    break;
+            }
+        }
+
+        // --- ペア生成 ---
+        spawnPair() {
+            this.currentPair = this.nextPair;
+            this.nextPair = {
+                tiles: [this.getRandomTile(), this.getRandomTile()],
+                x: Math.floor(COLS / 2), // 中央から出現
+                y: -1, // 盤面の上から
+                orientation: 0 // 0:下, 1:左, 2:上, 3:右
+            };
+
+            if (this.currentPair) {
+                // ゲームオーバーチェック
+                if (!this.isValidPosition(this.currentPair.x, this.currentPair.y, this.currentPair.orientation)) {
+                    this.endGame();
+                }
+            }
+            this.drawNextPair();
+        }
+
+        getRandomTile() {
+            return this.activeTileTypes[Math.floor(Math.random() * this.activeTileTypes.length)];
+        }
+
+        // --- ペア操作 ---
+        movePair(dx, dy) {
+            const { x, y, orientation } = this.currentPair;
+            if (this.isValidPosition(x + dx, y + dy, orientation)) {
+                this.currentPair.x += dx;
+                this.currentPair.y += dy;
+                console.log(`Pair moved to (${this.currentPair.x}, ${this.currentPair.y})`);
+                return true;
+            }
+            return false;
+        }
+
+        rotatePair() {
+            const { x, y, orientation } = this.currentPair;
+            const newOrientation = (orientation + 1) % 4;
+
+            // Test 1: その場で回転
+            if (this.isValidPosition(x, y, newOrientation)) {
+                this.currentPair.orientation = newOrientation;
+                return;
+            }
+
+            // Test 2: ウォールキック
+            let kickX = 0;
+            // 下(0) -> 左(1) 回転時、左壁にぶつかる場合
+            if (orientation === 0 && newOrientation === 1) kickX = 1; // 右に1つずらす
+            // 上(2) -> 右(3) 回転時、右壁にぶつかる場合
+            if (orientation === 2 && newOrientation === 3) kickX = -1; // 左に1つずらす
+            
+            if (kickX !== 0) {
+                if (this.isValidPosition(x + kickX, y, newOrientation)) {
+                    this.currentPair.x += kickX;
+                    this.currentPair.orientation = newOrientation;
+                    return;
+                }
+            }
+        }
+
+        hardDrop() {
+            while (this.movePair(0, 1)) { /* no-op */ }
+            this.placePair();
+        }
+
+        // --- 衝突判定 ---
+        getPairCoordinates(x, y, orientation) {
+            const tile1 = { x, y };
+            let tile2;
+            switch (orientation) {
+                case 0: tile2 = { x: x, y: y + 1 }; break;   // 下
+                case 1: tile2 = { x: x - 1, y: y }; break; // 左
+                case 2: tile2 = { x: x, y: y - 1 }; break; // 上
+                case 3: tile2 = { x: x + 1, y: y }; break; // 右
+                default: tile2 = { x: x, y: y + 1 }; // フォールバック
+            }
+            return [tile1, tile2];
+        }
+
+        isValidPosition(x, y, orientation) {
+            const coords = this.getPairCoordinates(x, y, orientation);
+
+            for (const coord of coords) {
+                if (coord.x < 0 || coord.x >= COLS || coord.y >= ROWS) {
+                    return false; // 壁の外
+                }
+                if (coord.y >= 0 && this.grid[coord.y][coord.x]) {
+                    return false; // 他の牌と衝突
+                }
+            }
+            return true;
+        }
+
+        // --- ペア設置と消去処理 ---
+        applyGravity() {
+            let moved;
+            do {
+                moved = false;
+                // 下の行から上にスキャン
+                for (let r = ROWS - 2; r >= 0; r--) {
+                    for (let c = 0; c < COLS; c++) {
+                        // タイルがあり、その真下が空の場合
+                        if (this.grid[r][c] && !this.grid[r + 1][c]) {
+                            this.grid[r + 1][c] = this.grid[r][c];
+                            this.grid[r][c] = null;
+                            moved = true;
+                        }
+                    }
+                }
+            } while (moved);
+        }
+
+        async placePair() {
+            const { x, y, tiles, orientation } = this.currentPair;
+            const coords = this.getPairCoordinates(x, y, orientation);
+
+            coords.forEach((coord, index) => {
+                if (coord.y >= 0) {
+                    this.grid[coord.y][coord.x] = tiles[index];
+                }
+            });
+
+            this.currentPair = null;
+
+            // 重力を適用して、浮いている牌を落とす
+            this.applyGravity();
+
+            // 盤面を再描画して、消去処理の前に落下した状態を見せる
+            this.draw();
+            await this.sleep(50); // 視覚的なための短い待機
+
+            this.isCheckingMatches = true;
+            await this.handleMatchesAndChains(1); // 初回チェインは1
+        }
+
+        async handleMatchesAndChains(chainCount) {
+            const matches = this.findMatches();
+            if (matches.size > 0) {
+                this.updateScore(matches.size, chainCount);
+                this.clearTiles(matches);
+                this.draw(); // 消去後を描画
+                await new Promise(r => setTimeout(r, 200)); // 消去アニメーション待ち
+
+                this.applyGravity();
+                this.draw(); // 落下後を描画
+                await new Promise(r => setTimeout(r, 200)); // 落下アニメーション待ち
+
+                this.handleMatchesAndChains(chainCount + 1); // 連鎖チェック
+            } else {
+                this.isCheckingMatches = false;
+                this.spawnPair(); // 新しいペアを生成
+            }
+        }
+
+        _parseTile(type) {
+            if (!type) return null;
+            // "man1", "pin2", "sou3" のような形式の牌を解析する
+            const match = type.match(/^(man|pin|sou)(\d)$/);
+            if (match) {
+                return { suit: match[1], num: parseInt(match[2], 10) };
+            }
+            return null; // 数字牌ではない
+        }
+
+        _isStraight(tiles) {
+            // 3つの牌が連続した数字（例: 1-2-3, 4-5-6）になっているかチェック
+            if (tiles.length !== 3 || tiles.some(t => t === null)) return false;
+            
+            const parsed = tiles.map(t => this._parseTile(t));
+            if (parsed.some(p => p === null)) return false; // 解析不能な牌が含まれる
+
+            // スート（種類）がすべて同じかチェック
+            const firstSuit = parsed[0].suit;
+            if (!parsed.every(p => p.suit === firstSuit)) return false;
+
+            // 数字を昇順にソートして、連番になっているかチェック
+            const nums = parsed.map(p => p.num).sort((a, b) => a - b);
+            return nums[1] === nums[0] + 1 && nums[2] === nums[1] + 1;
+        }
+
+        findMatches() {
+            const toClear = new Set();
+
+            // --- 1. 同じ牌が3つ以上揃った場合（刻子）のチェック ---
+            // 横方向
+            for (let r = 0; r < ROWS; r++) {
+                for (let c = 0; c <= COLS - 3; c++) {
+                    const tile = this.grid[r][c];
+                    if (tile && tile === this.grid[r][c + 1] && tile === this.grid[r][c + 2]) {
+                        let length = 2;
+                        while (c + length < COLS && this.grid[r][c + length] === tile) length++;
+                        for (let i = 0; i < length; i++) toClear.add(`${r},${c + i}`);
+                    }
+                }
+            }
+            // 縦方向
+            for (let c = 0; c < COLS; c++) {
+                for (let r = 0; r <= ROWS - 3; r++) {
+                    const tile = this.grid[r][c];
+                    if (tile && tile === this.grid[r + 1][c] && tile === this.grid[r + 2][c]) {
+                        let length = 2;
+                        while (r + length < ROWS && this.grid[r + length][c] === tile) length++;
+                        for (let i = 0; i < length; i++) toClear.add(`${r + i},${c}`);
+                    }
+                }
+            }
+
+            // --- 2. 数字が連番（123など）で揃った場合（順子）のチェック ---
+            // 横方向
+            for (let r = 0; r < ROWS; r++) {
+                for (let c = 0; c <= COLS - 3; c++) {
+                    const window = [this.grid[r][c], this.grid[r][c + 1], this.grid[r][c + 2]];
+                    if (this._isStraight(window)) {
+                        toClear.add(`${r},${c}`);
+                        toClear.add(`${r},${c + 1}`);
+                        toClear.add(`${r},${c + 2}`);
+                    }
+                }
+            }
+
+            // 縦方向
+            for (let c = 0; c < COLS; c++) {
+                for (let r = 0; r <= ROWS - 3; r++) {
+                    const window = [this.grid[r][c], this.grid[r + 1][c], this.grid[r + 2][c]];
+                    if (this._isStraight(window)) {
+                        toClear.add(`${r},${c}`);
+                        toClear.add(`${r + 1},${c}`);
+                        toClear.add(`${r + 2},${c}`);
+                    }
+                }
+            }
+
+            return toClear;
+        }
+
+        clearTiles(tilesToClear) {
+            tilesToClear.forEach(coord => {
+                const [r, c] = coord.split(',').map(Number);
+                this.grid[r][c] = null;
+            });
+        }
+
+        // --- スコアリング ---
+        updateScore(clearedCount, chain) {
+            const chainBonus = 10 * (chain - 1);
+            const earnedScore = clearedCount * (10 + chainBonus);
+            const oldScore = this.score;
+            this.score += earnedScore;
+            this.updateScoreDisplay();
+
+            // スコア200点ごとにスピードアップ
+            const oldLevel = Math.floor(oldScore / 200);
+            const newLevel = Math.floor(this.score / 200);
+            if (newLevel > oldLevel) {
+                this.fallInterval = Math.floor(this.fallInterval * 0.95);
+                console.log(`Speed up! New interval: ${this.fallInterval} ticks`);
+            }
+        }
+
+        updateScoreDisplay() {
+            this.scoreValueEl.textContent = this.score;
+        }
+
+        // --- ゲームループと描画 ---
+        run(currentTime) {
+            if (this.gameOver) return;
+
+            requestAnimationFrame(this.gameLoop);
+
+            this.tickCounter++;
+            if (this.tickCounter >= this.fallInterval && this.currentPair && !this.isCheckingMatches) {
+                this.tickCounter = 0;
+                if (!this.movePair(0, 1)) {
+                    this.placePair();
+                }
+            }
+
+            this.draw();
+        }
+
+        draw() {
+            this.ctx.clearRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+            this.drawGridLines();
+            this.drawLandedTiles();
+            if (this.currentPair) {
+                this.drawGhostPair(); // ゴーストを先に描画
+                this.drawCurrentPair();
+            }
+        }
+
+        calculateGhostPosition() {
+            if (!this.currentPair) return null;
+            let ghostY = this.currentPair.y;
+            while (this.isValidPosition(this.currentPair.x, ghostY + 1, this.currentPair.orientation)) {
+                ghostY++;
+            }
+            return { ...this.currentPair, y: ghostY };
+        }
+
+        drawGhostPair() {
+            const ghostPair = this.calculateGhostPosition();
+            if (!ghostPair) return;
+
+            this.ctx.globalAlpha = 0.3; // 半透明に設定
+            const { x, y, tiles, orientation } = ghostPair;
+            const coords = this.getPairCoordinates(x, y, orientation);
+            this.drawTile(tiles[0], coords[0].x * CELL_WIDTH, coords[0].y * CELL_HEIGHT, this.ctx);
+            this.drawTile(tiles[1], coords[1].x * CELL_WIDTH, coords[1].y * CELL_HEIGHT, this.ctx);
+            this.ctx.globalAlpha = 1.0; // 透明度を元に戻す
+        }
+
+        drawGridLines() {
+            this.ctx.strokeStyle = '#eee';
+            this.ctx.lineWidth = 1;
+            for (let c = 1; c < COLS; c++) {
+                this.ctx.beginPath();
+                this.ctx.moveTo(c * CELL_WIDTH, 0);
+                this.ctx.lineTo(c * CELL_WIDTH, GAME_HEIGHT);
+                this.ctx.stroke();
+            }
+            for (let r = 1; r < ROWS; r++) {
+                this.ctx.beginPath();
+                this.ctx.moveTo(0, r * CELL_HEIGHT);
+                this.ctx.lineTo(GAME_WIDTH, r * CELL_HEIGHT);
+                this.ctx.stroke();
+            }
+        }
+
+        drawLandedTiles() {
+            for (let r = 0; r < ROWS; r++) {
+                for (let c = 0; c < COLS; c++) {
+                    if (this.grid[r][c]) {
+                        this.drawTile(this.grid[r][c], c * CELL_WIDTH, r * CELL_HEIGHT, this.ctx);
+                    }
+                }
+            }
+        }
+
+        drawCurrentPair() {
+            if (!this.currentPair) return;
+            const { x, y, tiles, orientation } = this.currentPair;
+            const coords = this.getPairCoordinates(x, y, orientation);
+            this.drawTile(tiles[0], coords[0].x * CELL_WIDTH, coords[0].y * CELL_HEIGHT, this.ctx);
+            this.drawTile(tiles[1], coords[1].x * CELL_WIDTH, coords[1].y * CELL_HEIGHT, this.ctx);
+        }
+
+        drawNextPair() {
+            this.nextCtx.clearRect(0, 0, this.nextCanvas.width, this.nextCanvas.height);
+            if (this.nextPair) {
+                const { tiles } = this.nextPair;
+                const x = (this.nextCanvas.width - CELL_WIDTH) / 2;
+                this.drawTile(tiles[0], x, CELL_HEIGHT * 0.5, this.nextCtx);
+                this.drawTile(tiles[1], x, CELL_HEIGHT * 1.5, this.nextCtx);
+            }
+        }
+
+        drawTile(type, x, y, context) {
+            if (y < 0) return; // 盤面外は描画しない
+            const tileInfo = this.tileImages[type];
+            if (tileInfo && tileInfo.loaded) {
+                context.drawImage(tileInfo.image, x, y, CELL_WIDTH, CELL_HEIGHT);
+            } else if (tileInfo) {
+                // フォールバック描画
+                context.fillStyle = tileInfo.color;
+                context.fillRect(x, y, CELL_WIDTH, CELL_HEIGHT);
+                context.strokeStyle = '#666';
+                context.strokeRect(x, y, CELL_WIDTH, CELL_HEIGHT);
+                context.fillStyle = 'black';
+                context.font = 'bold 16px "Noto Sans JP", sans-serif';
+                context.textAlign = 'center';
+                context.textBaseline = 'middle';
+                context.fillText(tileInfo.text, x + CELL_WIDTH / 2, y + CELL_HEIGHT / 2 + 1);
+            }
+        }
+
+        // --- ゲームオーバー処理 ---
+        endGame() {
+            if (this.gameOver) return;
+            this.gameOver = true;
+            console.log('Game Over!');
+            this.drawGameOverScreen();
+        }
+
+        drawGameOverScreen() {
+            this.gameOverScreen.style.width = `${this.canvas.width}px`;
+            this.gameOverScreen.style.height = `${this.canvas.height}px`;
+            const containerRect = document.getElementById('game-container').getBoundingClientRect();
+            this.gameOverScreen.style.top = `${containerRect.top}px`;
+            this.gameOverScreen.style.left = `${containerRect.left}px`;
+            
+            this.gameOverScreen.innerHTML = `
+                <div style="padding: 20px;">
+                    <h2>GAME OVER</h2>
+                    <p>Final Score: ${this.score}</p>
+                    <p style="margin-top: 20px;">Press [R] to Restart</p>
+                </div>
+            `;
+            this.gameOverScreen.style.display = 'flex';
+        }
+
+        sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+    }
+
+    // ゲームインスタンスの生成
+    new MahjongDropGame();
+});
+</script>
+
+</body>
+</html>
